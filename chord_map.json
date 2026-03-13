@@ -1,0 +1,16 @@
+{
+  "CEG":   "C",
+  "ADF":   "Dm",
+  "BEG":   "Em",
+  "ACF":   "F",
+  "BDG":   "G",
+  "ACE":   "Am",
+  "BDF":   "Bdim",
+  "BCEG":  "Cmaj7",
+  "ACDF":  "Dm7",
+  "ABEG":  "Em7",
+  "ACEF":  "Fmaj7",
+  "BDFG":  "G7",
+  "ABCE":  "Am7",
+  "ABDF":  "Bm7b5"
+}
