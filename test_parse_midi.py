@@ -143,6 +143,69 @@ class TestParseFile(unittest.TestCase):
         self.assertIn((0, 0), events)
         self.assertEqual(events[(0, 0)], ["F♯3"])
 
+    # ── Format B (position-first, real Logic Pro Event List) ──────────────
+
+    def test_format_b_single_note(self):
+        """Position-first format: <bar> <beat> <div> <tick> Note <ch> <pitch>..."""
+        with TemporaryDirectory() as td:
+            f = self._make_file(
+                "53 1 1 1 \t Note\t 11\t C2\t 79\t 0 1 2 154\n"
+                "\t\t\t Vit. rel.\t\t\t 0\t\t\n",
+                Path(td),
+            )
+            events = pm.parse_file(f)
+        # Bar 53, beat 1, div 1 → measure 52, slot 0
+        self.assertIn((52, 0), events)
+        self.assertEqual(events[(52, 0)], ["C2"])
+
+    def test_format_b_simultaneous_notes(self):
+        with TemporaryDirectory() as td:
+            f = self._make_file(
+                "53 2 1 1  Note  11  C3  85  0 0 1 195\n"
+                "53 2 1 1  Note  11  E3  78  0 0 1 140\n",
+                Path(td),
+            )
+            events = pm.parse_file(f)
+        # Bar 53, beat 2, div 1 → measure 52, slot 4
+        self.assertIn((52, 4), events)
+        self.assertEqual(sorted(events[(52, 4)]), ["C3", "E3"])
+
+    def test_format_b_unicode_sharp(self):
+        with TemporaryDirectory() as td:
+            f = self._make_file(
+                "53 4 1 1  Note  11  F♯3  73  0 0 2 18\n",
+                Path(td),
+            )
+            events = pm.parse_file(f)
+        # Bar 53, beat 4, div 1 → measure 52, slot 12
+        self.assertIn((52, 12), events)
+        self.assertEqual(events[(52, 12)], ["F♯3"])
+
+    def test_format_b_ignores_vit_rel_lines(self):
+        """Vit. rel. continuation lines must be silently skipped."""
+        with TemporaryDirectory() as td:
+            f = self._make_file(
+                "53 1 1 1  Note  11  C2  79  0 1 2 154\n"
+                "   Vit. rel.   0\n"
+                "53 1 3 1  Note  11  G2  76  0 0 1 97\n"
+                "   Vit. rel.   0\n",
+                Path(td),
+            )
+            events = pm.parse_file(f)
+        self.assertEqual(len(events), 2)
+
+    def test_both_formats_in_same_file(self):
+        """A file may mix Format A and Format B lines."""
+        with TemporaryDirectory() as td:
+            f = self._make_file(
+                "Note  1 1 1 1  C3  100  0 1 0 0\n"   # Format A
+                "2 1 1 1  Note  11  D3  90  0 1 0 0\n",  # Format B
+                Path(td),
+            )
+            events = pm.parse_file(f)
+        self.assertIn((0, 0), events)  # bar 1, beat 1 → measure 0, slot 0
+        self.assertIn((1, 0), events)  # bar 2, beat 1 → measure 1, slot 0
+
 
 class TestRenderSlot(unittest.TestCase):
     """_render_slot: convert raw pitches to display token."""

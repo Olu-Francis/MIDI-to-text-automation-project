@@ -75,24 +75,25 @@ _ENHARMONIC: Dict[str, int] = {
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
 
-# Matches a Logic Pro Event List "Note" line.
-# Position columns: bar  beat  division  tick  (all integers)
-# Pitch: letter + optional accidental + octave digit(s), e.g. C3, F#3, F♯3, Bb4
-_NOTE_RE = re.compile(
-    r"^Note"                                        # event type
-    r"\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"           # bar beat div tick
-    r"\s+([A-Ga-g][#b♯♭]?\d+)"                    # pitch + octave
-    r"\s+\d+"                                       # velocity (ignored)
-    r".*$",                                         # duration etc. (ignored)
+# Format A – "Note-first" (simpler / user-constructed files):
+#   Note  <bar> <beat> <div> <tick>  <pitch+octave>  <velocity>  ...
+# e.g.:  Note    1 1 1 1    C3    100    0 1 0 0
+_NOTE_RE_A = re.compile(
+    r"^Note"
+    r"\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"    # bar beat div tick
+    r"\s+([A-Ga-g][#b♯♭]?\d+)",            # pitch + octave
     re.IGNORECASE,
 )
 
-# Also accept a looser "Note … <pitch>" format where the four position fields
-# appear as a single space-separated block after "Note":
-_NOTE_RE_LOOSE = re.compile(
-    r"^Note"
-    r"\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
-    r"\s+([A-Ga-g][#b♯♭]?\d+)",
+# Format B – "Position-first" (real Logic Pro Event List export):
+#   <bar> <beat> <div> <tick>  Note  <channel>  <pitch+octave>  <velocity>  ...
+# e.g.:  53 1 1 1    Note    11    C2    79    0 1 2 154
+# Lines may be preceded by arbitrary whitespace / tab characters.
+_NOTE_RE_B = re.compile(
+    r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"   # bar beat div tick
+    r"\s+Note"                              # event type
+    r"\s+\d+"                              # MIDI channel (ignored)
+    r"\s+([A-Ga-g][#b♯♭]?\d+)",            # pitch + octave
     re.IGNORECASE,
 )
 
@@ -156,6 +157,18 @@ EventMap = Dict[Tuple[int, int], List[str]]  # (measure, slot) → raw pitches
 def parse_file(path: Path) -> EventMap:
     """Parse a Logic Pro MIDI text export and return an event map.
 
+    Supports two export formats automatically:
+
+    * **Format A** – "Note-first" (simple / user-assembled files)::
+
+          Note    1 1 1 1    C3    100    0 1 0 0
+
+    * **Format B** – "Position-first" (real Logic Pro Event List)::
+
+          53 1 1 1    Note    11    C2    79    0 1 2 154
+
+    ``Vit. rel.`` continuation lines and all other non-Note lines are skipped.
+
     Each entry maps ``(measure_0indexed, slot_0indexed)`` to a list of raw
     pitch strings (with octave, e.g. ``["C3", "E3", "G3"]``).
     """
@@ -165,7 +178,7 @@ def parse_file(path: Path) -> EventMap:
             line = line.strip()
             if not line:
                 continue
-            m = _NOTE_RE_LOOSE.match(line)
+            m = _NOTE_RE_A.match(line) or _NOTE_RE_B.match(line)
             if not m:
                 continue
             bar, beat, div = int(m.group(1)), int(m.group(2)), int(m.group(3))
