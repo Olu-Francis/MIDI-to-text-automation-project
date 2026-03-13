@@ -19,6 +19,90 @@ from tempfile import TemporaryDirectory
 import parse_midi as pm
 
 
+class TestMidiPitchNumber(unittest.TestCase):
+    """_midi_pitch_number: compute MIDI pitch integer from raw pitch string."""
+
+    def test_middle_c(self):
+        self.assertEqual(pm._midi_pitch_number("C4"), 60)
+
+    def test_g3(self):
+        self.assertEqual(pm._midi_pitch_number("G3"), 55)
+
+    def test_b3(self):
+        self.assertEqual(pm._midi_pitch_number("B3"), 59)
+
+    def test_c4_higher_than_b3(self):
+        self.assertGreater(pm._midi_pitch_number("C4"), pm._midi_pitch_number("B3"))
+
+    def test_g3_lower_than_b3(self):
+        self.assertLess(pm._midi_pitch_number("G3"), pm._midi_pitch_number("B3"))
+
+    def test_sharp(self):
+        self.assertEqual(pm._midi_pitch_number("F#3"), pm._midi_pitch_number("Gb3"))
+
+    def test_unicode_sharp(self):
+        self.assertEqual(pm._midi_pitch_number("F♯3"), pm._midi_pitch_number("F#3"))
+
+    def test_low_octave(self):
+        # C2 = (2+1)*12 + 0 = 36
+        self.assertEqual(pm._midi_pitch_number("C2"), 36)
+
+    def test_unknown_returns_zero(self):
+        self.assertEqual(pm._midi_pitch_number("?!"), 0)
+
+
+class TestNoteOrdering(unittest.TestCase):
+    """_render_slot: simultaneous notes must be ordered by MIDI pitch, not name."""
+
+    def test_gbce_in_pitch_order(self):
+        """G3(55) < B3(59) < C4(60) < E4(64) — must NOT be alphabetical BCEG."""
+        result = pm._render_slot(["G3", "B3", "C4", "E4"], {}, False)
+        self.assertEqual(result, "GBCE")
+
+    def test_gbce_regardless_of_input_order(self):
+        """Input order must not affect the pitch-ordered output."""
+        result = pm._render_slot(["E4", "C4", "B3", "G3"], {}, False)
+        self.assertEqual(result, "GBCE")
+
+    def test_g_major_triad_pitch_order(self):
+        """G3(55) < B3(59) < D4(62) — must be GBD, not BDG (alphabetical)."""
+        result = pm._render_slot(["B3", "D4", "G3"], {}, False)
+        self.assertEqual(result, "GBD")
+
+    def test_c_major_triad_same_in_both_orders(self):
+        """C3(48) < E3(52) < G3(55) — pitch order == alphabetical order here."""
+        result = pm._render_slot(["C3", "E3", "G3"], {}, False)
+        self.assertEqual(result, "CEG")
+
+    def test_a_minor_across_octave(self):
+        """A3(57) < C4(60) < E4(64) — pitch order gives ACE."""
+        result = pm._render_slot(["A3", "C4", "E4"], {}, False)
+        self.assertEqual(result, "ACE")
+
+    def test_ordering_with_flats(self):
+        """G3 < Bb3 < D4 — rendered as flats, must be GBbD."""
+        result = pm._render_slot(["G3", "A#3", "D4"], {}, use_flats=True)
+        self.assertEqual(result, "GBbD")
+
+    def test_ordering_with_sharps_crossing_octave(self):
+        """F#3(54) < A3(57) < C#4(61) — pitch order gives F#AC#."""
+        result = pm._render_slot(["F#3", "A3", "C#4"], {}, False)
+        self.assertEqual(result, "F#AC#")
+
+    def test_chord_map_still_works_with_pitch_ordering(self):
+        """Chord map lookup uses alphabetical key; render still correct."""
+        chord_map = {"BDG": "G"}
+        # G3(55) < B3(59) < D4(62) → alphabetical key 'BDG' → chord 'G'
+        result = pm._render_slot(["B3", "D4", "G3"], chord_map, False)
+        self.assertEqual(result, "G")
+
+    def test_chord_map_gbce_example(self):
+        """Chord map lookup is pitch-independent (alphabetical key)."""
+        chord_map = {"BCEG": "Cmaj7"}
+        result = pm._render_slot(["G3", "B3", "C4", "E4"], chord_map, False)
+        self.assertEqual(result, "Cmaj7")
+
+
 class TestParsePitch(unittest.TestCase):
     """_parse_pitch: strip octave and normalise accidentals."""
 
@@ -283,6 +367,13 @@ class TestBuildOutput(unittest.TestCase):
         # C, 7 spaces, G
         self.assertEqual(bar_content, "C       G")
 
+    def test_gbce_in_output(self):
+        """G3 B3 C4 E4 in same slot → output 'GBCE' in pitch order."""
+        events = {(0, 0): ["G3", "B3", "C4", "E4"]}
+        result = pm.build_output(events, {}, False, per_measure=True)
+        bar_content = result.split(": ", 1)[1]
+        self.assertEqual(bar_content, "GBCE")
+
 
 class TestLoadChordMap(unittest.TestCase):
     """load_chord_map: JSON file loading."""
@@ -356,6 +447,30 @@ class TestCLI(unittest.TestCase):
         # Bar 2 should label the D minor chord as 'Dm'
         bar2_line = [l for l in text.splitlines() if "Bar   2:" in l][0]
         self.assertIn("Dm", bar2_line)
+
+    def test_sample_file_gbce_pitch_order(self):
+        """End-to-end: bar 4 of sample file has G3 B3 D4 → must be 'GBD'.
+
+        Uses an empty chord map so that the raw note names are rendered
+        (not replaced by a chord label from the default chord_map.json).
+        """
+        sample = Path(__file__).parent / "sample_midi_info_notes.txt"
+        if not sample.exists():
+            self.skipTest("sample_midi_info_notes.txt not found")
+        with TemporaryDirectory() as td:
+            empty_cmap = Path(td) / "empty.json"
+            empty_cmap.write_text("{}", encoding="utf-8")
+            out = Path(td) / "out.txt"
+            rc = pm.main([str(sample), "--chord-map", str(empty_cmap), "--output", str(out)])
+            self.assertEqual(rc, 0)
+            text = out.read_text(encoding="utf-8")
+        bar4_line = [l for l in text.splitlines() if "Bar   4:" in l][0]
+        bar4_content = bar4_line.split(": ", 1)[1]
+        # G3(55) < B3(59) < D4(62): pitch order is GBD, not alphabetical BDG
+        self.assertTrue(
+            bar4_content.startswith("GBD"),
+            f"Expected 'GBD...' but got: {bar4_content!r}",
+        )
 
 
 if __name__ == "__main__":

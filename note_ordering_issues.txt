@@ -1,0 +1,52 @@
+Note Ordering Issues — Rationale and Requirements
+===================================================
+
+Problem
+-------
+When multiple notes are played at the same time (same bar + beat + subdivision),
+the original script sorted them alphabetically by note name before rendering.
+Alphabetical order does NOT match the order notes appear on a piano keyboard
+(musical pitch order).
+
+Example
+-------
+Consider four notes played simultaneously:
+  G3, B3, C4, E4
+
+Alphabetical sort gives: B, C, E, G  → output "BCEG"
+Musical pitch order gives: G, B, C, E → output "GBCE"
+
+MIDI pitch numbers (correct, lowest-to-highest):
+  G3 = (3+1)*12 + 7  = 55  ← lowest
+  B3 = (3+1)*12 + 11 = 59
+  C4 = (4+1)*12 + 0  = 60
+  E4 = (4+1)*12 + 4  = 64  ← highest
+
+The musical (keyboard) order is: G → B → C → E
+The alphabetical order would be:  B → C → E → G  (WRONG)
+
+Why Musical Order Matters
+--------------------------
+The output outline is meant to guide pianists. The note sequence in the outline
+should mirror the left-to-right layout of the keyboard so that the musician can
+read and play at the same time without mentally reordering the notes.
+
+Required Behaviour
+------------------
+1. Use the full pitch string (e.g. "G3", "C4") to compute each note's MIDI
+   pitch number: midi_pitch = (octave + 1) * 12 + semitone
+2. Sort simultaneous notes by MIDI pitch number, lowest first.
+3. Strip the octave ONLY AFTER sorting, then render each note name using the
+   --flats flag when flat spelling is desired (default is sharps).
+4. The chord-map lookup key continues to use alphabetically sorted note names
+   (without octave) so that existing chord_map.json files remain compatible.
+5. The rendered output (when no chord map match) is in musical pitch order.
+
+Hardcoded note order reference (pitch class 0–11):
+  C, C#, D, D#, E, F, F#, G, G#, A, A#, B
+
+Test cases to verify (see test_parse_midi.py → TestNoteOrdering):
+  • G3 B3 C4 E4  → "GBCE"   (not "BCEG")
+  • C3 E3 G3     → "CEG"    (unchanged — same in both orders)
+  • A3 C4 E4     → "ACE"    (A3=57, C4=60, E4=64 — same as alphabetical here)
+  • B3 D4 G3     → "GBD"    (G3=55 < B3=59 < D4=62)

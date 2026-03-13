@@ -22,6 +22,10 @@ at their rhythmic positions within a 16-subdivision-per-bar grid.
 Simultaneous notes are concatenated without spaces (e.g. ``CEG``); empty
 grid slots produce a single space character so that rhythm is legible.
 
+Simultaneous notes are ordered by MIDI pitch (lowest to highest), matching
+the left-to-right layout of a piano keyboard.  See note_ordering_issues.txt
+for details.
+
 Chord names can optionally replace note clusters when a ``chord_map.json``
 mapping file is provided.
 
@@ -97,8 +101,36 @@ _NOTE_RE_B = re.compile(
     re.IGNORECASE,
 )
 
-# Capture only the letter + accidental from a pitch string like "F#3"
-_PITCH_HEAD = re.compile(r"^([A-Ga-g][#b♯♭]?)")
+# Capture only the letter + accidental + octave from a pitch string like "F#3"
+_PITCH_RE = re.compile(r"^([A-Ga-g][#b♯♭]?)(-?\d+)$")
+
+
+def _midi_pitch_number(pitch_str: str) -> int:
+    """Return the MIDI pitch number for a raw pitch string like 'G3' or 'F#2'.
+
+    MIDI pitch = (octave + 1) * 12 + semitone
+    (Middle C = C4 = MIDI 60)
+
+    Used to sort simultaneous notes from lowest to highest, matching keyboard
+    order.  Returns 0 for unrecognised strings (they sort to the front).
+
+    Examples
+    --------
+    >>> _midi_pitch_number("C4")
+    60
+    >>> _midi_pitch_number("G3")
+    55
+    >>> _midi_pitch_number("B3")
+    59
+    """
+    m = _PITCH_RE.match(pitch_str)
+    if not m:
+        return 0
+    note_name = m.group(1).replace("♯", "#").replace("♭", "b")
+    note_name = note_name[0].upper() + note_name[1:]
+    octave = int(m.group(2))
+    semitone = _ENHARMONIC.get(note_name, 0)
+    return (octave + 1) * 12 + semitone
 
 
 def _parse_pitch(pitch_str: str, use_flats: bool = False) -> str:
@@ -115,7 +147,7 @@ def _parse_pitch(pitch_str: str, use_flats: bool = False) -> str:
     >>> _parse_pitch("Bb4", use_flats=True)
     'Bb'
     """
-    m = _PITCH_HEAD.match(pitch_str)
+    m = _PITCH_RE.match(pitch_str)
     if not m:
         return pitch_str  # unknown – pass through unchanged
 
@@ -191,9 +223,9 @@ def parse_file(path: Path) -> EventMap:
 def load_chord_map(path: Optional[Path]) -> Dict[str, str]:
     """Load an optional JSON chord-name mapping.
 
-    The mapping keys must be sorted, concatenated note names (without octave),
-    e.g. ``"CEG"`` for C major, ``"ADF"`` for D minor.  The values are the
-    human-readable chord labels to display.
+    The mapping keys must be alphabetically sorted, concatenated note names
+    (without octave), e.g. ``"CEG"`` for C major, ``"ADF"`` for D minor.
+    The values are the human-readable chord labels to display.
 
     Returns an empty dict when *path* is ``None`` or does not exist.
     """
@@ -205,8 +237,13 @@ def load_chord_map(path: Optional[Path]) -> Dict[str, str]:
 
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
-def _notes_key(note_names: List[str]) -> str:
-    """Sorted concatenation of note names used as a chord-map lookup key."""
+def _chord_map_key(note_names: List[str]) -> str:
+    """Alphabetically sorted, deduplicated concatenation of note names.
+
+    Used as the chord-map lookup key so that chord_map.json keys remain
+    order-independent (e.g. ``"CEG"`` matches regardless of input order).
+    This preserves backward compatibility with existing chord_map.json files.
+    """
     return "".join(sorted(set(note_names)))
 
 
@@ -217,16 +254,33 @@ def _render_slot(
 ) -> str:
     """Return the display token for one grid slot.
 
-    Simultaneous notes are concatenated without spaces (e.g. ``CEG``).
-    If the resulting key exists in *chord_map* the chord name is returned
-    instead.
+    Simultaneous notes are sorted by MIDI pitch number (lowest to highest)
+    before octave information is removed.  This ensures the output order
+    matches the left-to-right layout of a piano keyboard rather than
+    alphabetical note name order.
+
+    If the resulting set of note names matches a key in *chord_map*, the
+    chord label is returned instead of the individual notes.
     """
-    names = [_parse_pitch(p, use_flats) for p in raw_pitches]
-    key = _notes_key(names)
+    # Sort by MIDI pitch number (lowest to highest) — use octave for ordering
+    sorted_pitches = sorted(set(raw_pitches), key=_midi_pitch_number)
+
+    # Render note names in pitch order, deduplicating by rendered name
+    seen: set = set()
+    names: List[str] = []
+    for p in sorted_pitches:
+        name = _parse_pitch(p, use_flats)
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    # Chord-map lookup uses alphabetically sorted names for compatibility
+    key = _chord_map_key(names)
     if key in chord_map:
         return chord_map[key]
-    # Concatenate sorted unique note names, no spaces
-    return "".join(sorted(set(names)))
+
+    # Return notes in musical pitch order (lowest to highest)
+    return "".join(names)
 
 
 def _render_measure(
@@ -355,10 +409,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Error: input file not found: {input_path}", file=sys.stderr)
         return 1
 
-    chord_map_path = Path(args.chord_map) if args.chord_map is not None else Path("chord_map.json")
-    if args.chord_map is not None and not chord_map_path.exists():
-        print(f"Error: chord map file not found: {chord_map_path}", file=sys.stderr)
-        return 1
+    if args.chord_map is not None:
+        chord_map_path: Optional[Path] = Path(args.chord_map)
+        if not chord_map_path.exists():
+            print(f"Error: chord map file not found: {chord_map_path}", file=sys.stderr)
+            return 1
+    else:
+        # Use chord_map.json if it exists in the current directory; silently
+        # ignore if absent so the script works without any chord mapping.
+        chord_map_path = Path("chord_map.json")
 
     events = parse_file(input_path)
     chord_map = load_chord_map(chord_map_path)
